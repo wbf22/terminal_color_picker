@@ -1,0 +1,13 @@
+
+
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build",
+			"type": "shell",
+			"command": "gcc -std=c11 -g -O0 -Wall -Wextra main.c -o color_picker",
+			"problemMatcher": []
+		}
+	]
+}

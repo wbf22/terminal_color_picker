@@ -14,4 +14,10 @@ and then run like so
 ./color_picker
 ```
 
+## Help/Contributing
+
+If you find any bugs or have any problems, feel free to open an issue here https://github.com/wbf22/terminal_color_picker/issues
+
+If you'd like to contribute, feel free to make a PR and we'll review it
+
 

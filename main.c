@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <time.h>
+#include <stdarg.h>
 
 // Simple, dependency-free terminal color picker
 // - determines terminal size
@@ -51,6 +52,106 @@ static int input_len = 0;
 static float cur_r = 0, cur_g = 0, cur_b = 0;
 static float cur_h = 0.0f, cur_s = 0.0f, cur_v = 0.0f;    // HSV
 static float cur_hs = 0.0f, cur_ss = 0.0f, cur_ls = 0.0f; // HSL
+
+// log
+#define RED      "\x1b[38;2;255;0;0m"
+#define ORANGE   "\x1b[38;2;230;76;0m"
+#define YELLOW   "\x1b[38;2;230;226;0m"
+#define GREEN    "\x1b[38;2;0;186;40m"
+#define BLUE     "\x1b[38;2;0;72;255m"
+#define INDIGO   "\x1b[38;2;84;0;230m"
+#define VIOLET   "\x1b[38;2;176;0;230m"
+#define GREY   "\x1b[38;2;105;105;105m"
+#define ANSI_RESET "\x1b[0m"
+
+#define TRACE "TRACE"
+#define DEBUG "DEBUG"
+#define INFO "INFO"
+#define WARN "WARN"
+#define ERROR "ERROR"
+char LOG_FILE[24];
+int log_c = 0;
+void write_f(char* file_path, char* str) {
+    FILE *file = fopen(file_path, "w");
+    if (file) {
+        fprintf(file, str);
+        fclose(file);
+    }
+}
+
+void c_log(char* level, char* message) {
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    char* color;
+    if (strcmp(level, TRACE) == 0) color = YELLOW;
+    else if (strcmp(level, DEBUG) == 0) color = GREEN;
+    else if (strcmp(level, INFO) == 0) color = BLUE;
+    else if (strcmp(level, WARN) == 0) color = ORANGE;
+    else if (strcmp(level, ERROR) == 0) color = RED;
+
+    size_t size = strlen(color) + strlen(level) + strlen(time_str) + strlen(message) + 128;
+
+    char *entire_message = malloc(size);
+    if (!entire_message)
+        return;
+
+    /* Build formatted message */
+    // printf(
+    //     "%s[%s]%s %s%s%s %s\n",
+    //     color,
+    //     level,
+    //     ANSI_RESET,
+    //     GREY,
+    //     time_str,
+    //     ANSI_RESET,
+    //     message
+    // );
+
+    /* Write to file (without ANSI colors) */
+    FILE *file = fopen(LOG_FILE, "a");
+    if (file) {
+        fprintf(file, "[%s] %s %s\n", level, time_str, message);
+        fclose(file);
+    }
+
+    free(entire_message);
+
+
+}
+
+void c_logf(char* level, char* message, ...) {
+
+    /* Format the message with the provided arguments */
+    va_list args1, args2;
+    va_start(args1, message);
+    va_copy(args2, args1);  // Copy for second use
+    
+    /* Calculate required buffer size */
+    int msg_len = vsnprintf(NULL, 0, message, args1);
+    va_end(args1);
+    
+    if (msg_len < 0) {
+        va_end(args2);
+        return;
+    }
+    
+    char *formatted_msg = malloc(msg_len + 1);
+    if (!formatted_msg) {
+        va_end(args2);
+        return;
+    }
+    
+    vsnprintf(formatted_msg, msg_len + 1, message, args2);
+    va_end(args2);
+    
+    c_log(level, formatted_msg);
+    
+    free(formatted_msg);
+}
+
 
 // Utility: clamp
 static int clamp_i(int v, int a, int b)
@@ -102,15 +203,219 @@ static void get_terminal_size(int *w, int *h)
     }
 }
 
-static void clear_screen() { 
-    printf("\033[2J\033[H"); // Clear screen, then move cursor to home
+static void clear_screen() { printf("\033[2J"); }
+static void move_cursor(int c, int r) {
     fflush(stdout);
+    printf("\033[%d;%dH", r+1, c+1); 
 }
-static void move_cursor(int r, int c) { printf("\033[%d;%dH", r, c); }
+static void go_to_home() { 
+    move_cursor(0,0);
+    // printf("\033[H"); 
+}
 static void hide_cursor() { printf("\033[?25l"); }
 static void show_cursor() { printf("\033[?25h"); }
-static void set_bg_rgb(int r, int g, int b) { printf("\033[48;2;%d;%d;%dm", r, g, b); }
-static void reset_colors() { printf("\033[0m"); }
+
+// printing
+typedef struct {
+    void **data;
+    size_t length;
+    size_t capacity;
+} ptr_array;
+
+static ptr_array* ptr_array_new() {
+    ptr_array* a = malloc(sizeof(ptr_array));
+    a->data = malloc(sizeof(void *) * 100);
+    a->capacity = 100;
+    a->length = 0;
+    memset(a->data, 0, a->capacity * sizeof(void *));
+
+    return a;
+}
+
+static void resize(ptr_array *a, size_t new_capicity) {
+    size_t old_cap = a->capacity;
+    void **tmp = realloc(a->data, new_capicity * sizeof(void *));
+    a->data = tmp;
+    a->capacity = new_capicity;
+    // initialize the new portion [old_cap, new_cap)
+    if (new_capicity > old_cap) {
+        memset(a->data + old_cap, 0, (new_capicity - old_cap) * sizeof(void *));
+    }
+}
+
+static int ptr_array_push(ptr_array *a, void *value) {
+    if (a->length >= a->capacity) {
+        // resize
+        size_t new_cap = a->capacity ? a->capacity * 2 : 8;
+        resize(a, new_cap);
+    }
+
+    a->data[a->length++] = value;
+    return 0;
+}
+
+static int ptr_array_set(ptr_array* a, void* value, int index) {
+
+    if (index >= a->capacity) {
+        // resize
+        size_t new_cap = (index+1) * 1.4;
+        resize(a, new_cap);
+    }
+
+    a->data[index] = value;
+    a->length = a->length > index+1? a->length : index+1;
+    return 0;
+}
+
+static void free_ptr_array(ptr_array *a, int free_values) {
+    if (!a) return;
+    if (free_values && a->data != NULL) {
+        for (size_t i = 0; i < a->length; ++i) {
+            if (a->data[i] != NULL) {
+                free(a->data[i]);
+            }
+        }
+    }
+    free(a->data);
+    free(a);
+}
+
+typedef struct {
+    int x;
+    int y;
+    char code[64];
+} AnsiiCode;
+ptr_array* last_codes;
+ptr_array* codes;
+char* last_out;
+char* output;
+int out_len = 0;
+int last_out_len = 0;
+int last_out_width = 0;
+static void set_chars(int x, int y, char* str) {
+    if (x >= 0 && x < term_width && y >= 0 && y < term_height) {
+        int index = x + y * term_width;
+        size_t n = strlen(str);
+        int length = index + n > out_len? out_len - index : n; 
+        memcpy(output + index, str, length);
+    }
+    else {
+        printf("Error - trying to set char out of bounds");
+        exit(-1);
+    }
+
+    // move_cursor(x, y);
+    // printf(str);
+    // fflush(stdout);
+}
+
+static void set_bg_rgb(int x, int y, int r, int g, int b) { 
+    int index = x + y * term_width;
+    AnsiiCode* code = malloc(sizeof(AnsiiCode));
+    code->x = x;
+    code->y = y;
+    snprintf(code->code, 64, "\033[48;2;%d;%d;%dm", r, g, b);
+    ptr_array_set(codes, code, index);
+
+    // move_cursor(x, y);
+    // printf(code->code);
+}
+
+static void reset_colors(int x, int y) { 
+    int index = x + y * term_width;
+    AnsiiCode* code = malloc(sizeof(AnsiiCode));
+    code->x = x;
+    code->y = y;
+    snprintf(code->code, 64, "\033[0m");
+    ptr_array_set(codes, code, index);
+
+    // move_cursor(x, y);
+    // printf(code->code);
+}
+
+static void print_output() {
+    AnsiiCode empty;
+    empty.code[0] = '\0';
+
+    // write_f("last_out.log", last_out);
+    // write_f("output.log", output);
+
+    // PRINT out any differences
+    go_to_home();
+    int last_out_line = 0;
+    int out_line = 0;
+    AnsiiCode* last_code = &empty;
+    AnsiiCode* code = &empty;
+    int x = 0;
+    int y = 0;
+    for (int i = 0; i < out_len; ++i) {
+
+        // account for different lines
+        if (i % term_width == 0) {
+            out_line +=1;
+            // putchar('\n');
+            ++y;
+            x = 0;
+            move_cursor(x, y);
+            // c_logf(INFO, "move_cursor(%d, %d)", x, y);
+        }
+        if (i % last_out_width == 0) {
+            last_out_line += 1;
+        }
+
+        // check for escape codes
+        if (last_codes->length > i && last_codes->data[i] != NULL) {
+            last_code = (AnsiiCode*) last_codes->data[i];
+        }
+        if (codes->length > i && codes->data[i] != NULL) {
+            code = (AnsiiCode*) codes->data[i];
+            printf(code->code);
+            // c_logf(INFO, "printf(%s)", code->code);
+            fflush(stdout);
+        }
+        
+        // print out anything different
+        int same_char = i < last_out_len && last_out[i] == output[i];
+        if (!same_char || last_out_line != out_line || strcmp(last_code->code, code->code) != 0) {
+            char c = output[i];
+            printf("%c", output[i]);
+            // c_logf(INFO, "printf(%c)", output[i]);
+            ++x;
+        }
+        else {
+            ++x;
+            move_cursor(x, y);
+            // c_logf(INFO, "move_cursor(%d, %d)", x, y);
+        }
+
+        fflush(stdout);
+    }
+    fflush(stdout);
+
+    // then wipe ansii codes
+    free_ptr_array(last_codes, 1);
+    last_codes = codes;
+
+    // set last_out
+    free(last_out);
+    last_out = output;
+    output = NULL;
+    last_out_len = out_len;
+    last_out_width = term_width;
+}
+
+static void init_output() {
+
+    // output strings
+    int new_len = term_width * term_height;
+    output = malloc(new_len);
+    out_len = new_len;
+    memset(output, ' ', out_len);
+
+    // ansii arrays
+    codes = ptr_array_new();
+}
+
 
 // Color conversions
 static void hsv_to_rgb_int(float h, float s, float v, float *r, float *g, float *b)
@@ -462,8 +767,15 @@ static void init_color_from_rgb(float r, float g, float b)
 
 static void render()
 {
+    // sprintf(LOG_FILE, "%d%s", log_c, ".log");
+    // log_c++;
+    // char s[2];
+    // sprintf(s, "%d", log_c % 10);
+    // s[1] = '\0';
+
     // Refresh sizes
     get_terminal_size(&term_width, &term_height);
+    init_output();
 
     // reserve some margins
     int left = 1;
@@ -473,7 +785,7 @@ static void render()
         usable_w = 20;
     grad_width = usable_w;
     // gradient height: use about 60% of height for gradient area
-    int grad_h = term_height - 12; // reserve lines for hue and info
+    int grad_h = term_height - 14; // reserve lines for hue and info
     if (grad_h < 6)
         grad_h = 6;
     grad_height = grad_h;
@@ -484,16 +796,15 @@ static void render()
     if (cursor_x >= grad_width)
         cursor_x = grad_width - 1;
 
+
     // Compute current color under cursor if cursor is moving
     if (!editing) {
         x_y_and_hue_to_rgb(cursor_x, cursor_y, hue_line_hue, &cur_r, &cur_g, &cur_b);
     }
 
-    clear_screen();
     // Draw gradient area
     for (int y = 0; y < grad_height; y++)
     {
-        move_cursor(top + y, left);
         // left grayscale then right color gradient
         for (int x = 0; x < grad_width; x++)
         {
@@ -502,51 +813,51 @@ static void render()
             x_y_and_hue_to_rgb(x, y, hue_line_hue, &r, &g, &bv);
 
             // print block with background color
-            set_bg_rgb(r, g, bv);
+            set_bg_rgb(left + x, top + y, r, g, bv);
             if (x == cursor_x && y == cursor_y) {
-                putchar('*');
+                set_chars(left + x, top + y, "*");
             }
             else {
-                putchar(' ');
+                set_chars(left + x, top + y, " ");
             }
+            // c_logf(INFO, "spot at %d %d", left + x, top + y);
         }
-        reset_colors();
-        printf("\n");
+        reset_colors(left + grad_width, top + y);
+        // set_chars(left + grad_width, top + y, " ");
     }
+
     
+
     // Draw hue line below gradient
     int hue_line_y = top + grad_height + 1;
-    move_cursor(hue_line_y, left);
-    printf("- ");
+    set_chars(left, hue_line_y, "- ");
     hue_line_width = grad_width-4;
     for (int x = 0; x < hue_line_width; x++)
     {
         double ratio = (double)x / (double)((grad_width - 1 > 0) ? (grad_width - 1) : 1);
         float r, g, bv;
         hsv_to_rgb_int((float)(ratio * 360.0f), 1.0f, 1.0f, &r, &g, &bv);
-        set_bg_rgb(r, g, bv);
-        putchar(' ');
+        set_bg_rgb(left + 2 + x, hue_line_y, r, g, bv);
+        set_chars(left + 2 + x, hue_line_y, " ");
     }
-    reset_colors();
-    printf(" +");
+    reset_colors(left + 2 + hue_line_width, hue_line_y);
+    set_chars(left + 2 + hue_line_width, hue_line_y, " +");
 
 
     // marker on hue line
-    move_cursor(hue_line_y + 1, left + hue_line_x +2);
-    printf("^");
-    reset_colors();
+    set_chars(left + hue_line_x + 2, hue_line_y + 1, "^");
 
 
     // Draw info area: current color in various representations
     int r = cur_r, g = cur_g, b = cur_b;
 
     // show current color
-    set_bg_rgb(r, g, b);
-    move_cursor(hue_line_y+2, left);
-    printf("      ");
-    move_cursor(hue_line_y+3, left);
-    printf("      ");
-    reset_colors();
+    set_bg_rgb(left, hue_line_y+2, r, g, b);
+    set_chars(left, hue_line_y+2, "      ");
+    reset_colors(left+5, hue_line_y+2);
+    set_bg_rgb(left, hue_line_y+3, r, g, b);
+    set_chars(left, hue_line_y+3, "      ");
+    reset_colors(left+5, hue_line_y+3);
 
     // show color codes
     char hex[MAX_INPUT];
@@ -567,50 +878,75 @@ static void render()
     if (color_code_type == HSL) snprintf(hsl, sizeof(hsl), "%s", input_buf);
 
     int info_y = hue_line_y + 4;
-    move_cursor(info_y, left);
     if (color_code_type == HEX) {
-        printf("HEX   ");
-        set_bg_rgb(200, 200, 200);
-        printf("%s", hex);
-        reset_colors();
+        set_chars(left, info_y, "HEX   ");
+        set_bg_rgb(left+6, info_y, 200, 200, 200);
+        set_chars(left+6, info_y, hex);
+        reset_colors(left+6+strlen(hex), info_y);
     }
-    else printf("HEX   %s", hex);
-    move_cursor(info_y+1, left);
-    if (color_code_type == RGB) {
-        printf("RGB   ");
-        set_bg_rgb(200, 200, 200);
-        printf("%s", rgb);
-        reset_colors();
+    else {
+        char line[MAX_INPUT + 6];
+        snprintf(line, sizeof(line),"HEX   %s", hex);
+        set_chars(left, info_y, line);
     }
-    else printf("RGB   %s", rgb);
-    move_cursor(info_y+2, left);
-    if (color_code_type == CMYK) {
-        printf("CMYK  ");
-        set_bg_rgb(200, 200, 200);
-        printf("%s", cmyk);
-        reset_colors();
-    }
-    else printf("CMYK  %s  ", cmyk);
-    move_cursor(info_y+3, left);
-    if (color_code_type == HSV) {
-        printf("HSV   ");
-        set_bg_rgb(200, 200, 200);
-        printf("%s", hsv);
-        reset_colors();
-    }
-    else printf("HSV   %s  ", hsv);
-    move_cursor(info_y+4, left);
-    if (color_code_type == HSL) {
-        printf("HSL   ");
-        set_bg_rgb(200, 200, 200);
-        printf("%s", hsl);
-        reset_colors();
-    }
-    else printf("HSL   %s", hsl);
 
-    move_cursor(info_y+5, left);
-    printf("(Hit TAB to edit color codes, ARROW KEYS to change color saturation and value, +/- for hue, 'q' to quit)");
-    fflush(stdout);
+    ++info_y;
+    if (color_code_type == RGB) {
+        set_chars(left, info_y, "RGB   ");
+        set_bg_rgb(left+6, info_y, 200, 200, 200);
+        set_chars(left+6, info_y, rgb);
+        reset_colors(left+6+strlen(rgb), info_y);
+    }
+    else {
+        char line[MAX_INPUT + 6];
+        snprintf(line, sizeof(line),"RGB   %s", rgb);
+        set_chars(left, info_y, line);
+    }
+
+
+    ++info_y;
+    if (color_code_type == CMYK) {
+        set_chars(left, info_y, "CMYK  ");
+        set_bg_rgb(left+6, info_y, 200, 200, 200);
+        set_chars(left+6, info_y, cmyk);
+        reset_colors(left+6+strlen(cmyk), info_y);
+    }
+    else {
+        char line[MAX_INPUT + 6];
+        snprintf(line, sizeof(line),"CMYK  %s", cmyk);
+        set_chars(left, info_y, line);
+    }
+
+    ++info_y;
+    if (color_code_type == HSV) {
+        set_chars(left, info_y, "HSV   ");
+        set_bg_rgb(left+6, info_y, 200, 200, 200);
+        set_chars(left+6, info_y, hsv);
+        reset_colors(left+6+strlen(hsv), info_y);
+    }
+    else {
+        char line[MAX_INPUT + 6];
+        snprintf(line, sizeof(line),"HSV   %s", hsv);
+        set_chars(left, info_y, line);
+    }
+
+    ++info_y;
+    if (color_code_type == HSL) {
+        set_chars(left, info_y, "HSL   ");
+        set_bg_rgb(left+6, info_y, 200, 200, 200);
+        set_chars(left+6, info_y, hsl);
+        reset_colors(left+6+strlen(hsl), info_y);
+    }
+    else {
+        char line[MAX_INPUT + 6];
+        snprintf(line, sizeof(line),"HSL   %s", hsl);
+        set_chars(left, info_y, line);
+    }
+
+    ++info_y;
+    set_chars(left, info_y, "(Hit TAB to edit color codes, ARROW KEYS to change color saturation and value, +/- for hue, 'q' to quit)");
+
+    print_output();
 }
 
 static int parse_hex_str_to_rgb(const char *s, float *r, float *g, float *b)
@@ -684,6 +1020,9 @@ static void handle_key(int ch)
             if (input_len > 0)
             {
                 input_buf[--input_len] = '\0';
+            }
+            else {
+                input_buf[0] = '\0';
             }
         }
         else if (ch >= 32 && ch < 127)
@@ -760,9 +1099,12 @@ int main()
         return 1;
     set_raw_mode();
     clear_screen();
+    go_to_home();
+
 
     // initialize color from black
     init_color_from_rgb(100, 150, 220);
+
     // measure terminal
     get_terminal_size(&term_width, &term_height);
     grad_width = (term_width > 60 ? term_width - 2 : term_width - 2);
@@ -770,6 +1112,19 @@ int main()
     cg = grad_width - sg;
     cursor_x = sg / 2;
     hue_line_hue = 0;
+
+    // init output
+    last_out = malloc(sizeof(char));
+    last_out[0] = '\0';
+    last_codes = ptr_array_new();
+    last_out_width = term_width;
+    // init_output();
+    // for(int x = 0; x < term_width; ++x) {
+    //     for(int y = 0; y < term_height; ++y) {
+    //         set_chars(x, y, " ");
+    //     }
+    // }
+    // print_output();
 
     while (1)
     {
